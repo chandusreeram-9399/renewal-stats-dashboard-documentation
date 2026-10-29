@@ -1,306 +1,192 @@
-# Renewal Dashboard & Segmentation — Manager Guide
+# Renewal dashboard by age group (A, B, C, D) — plain guide for managers
 
-**Audience:** Sales leadership, operations, product, engineering  
-**Source of truth (business):** *Renewal Dashboard Segmentation Requirements* (Retail Sales, Ombrella, 21 Oct 2026)  
-**Related product doc (what we shipped):** `RENEWAL_REMINDER_DASHBOARD_AGENT_RANKING_DOC.md`  
-**Last updated:** 29 Oct 2026  
-
----
-
-## 1. Executive summary
-
-Sales wants the **Admin renewal dashboard** to answer four different business questions—not one blended “overdue” number:
-
-| Segment | Who | Question |
-|---------|-----|----------|
-| **A — Current renewals** | Active customers not yet overdue | Are we collecting **before** they slip? |
-| **B — Recently overdue** | 1–60 days past oldest unpaid due | Are we recovering **early** arrears? |
-| **C — Mid overdue** | 61–199 days | What sits in the **middle** between recent and lapsed? |
-| **D — Long overdue** | 200+ days | What is true **win-back / lapsed** exposure? |
-
-**Two metrics must never be confused:**
-
-1. **Pipeline / exposure (snapshot)** — “As of report date, how much is due and in which segment?”  
-   → Uses **today’s** oldest unpaid due date → segment **A / B / C / D**.
-
-2. **Collection performance (events in a period)** — “How much did we collect in October, and **which segment earned credit**?”  
-   → Each payment is tagged with the segment the policy was in **on the payment date**, not where it sits **after** payment.
-
-**Today in the product:**
-
-- **Admin → Dashboard → Renewal stats** (carousel tab): **single pool** KPIs for all agents (or one agent). **Does not** break out A–D or credit collections by segment-at-payment-time.  
-- **Admin / Agent → Renewal Reminder** (Overdue / Upcoming tabs): **operational work queues** with **age bands** (similar to B/C/D sub-bands on overdue; upcoming sub-bands similar to A). **Not** the full sales dashboard model (no segment-collected matrix, no unified A–D board).
-
-This document explains the **target** (PDF), **current behaviour**, **gaps**, and **how to demo/mock UI** before full implementation.
+**For:** Sales  
+**Date:** October 2026  
+**Purpose:** Explain what we want on the renewal dashboard, how numbers are worked out, and what we have today vs what we still need to build.
 
 ---
 
-## 2. Definitions (use exactly as in the PDF)
+## Why we are doing this
 
-| Term | Meaning |
-|------|--------|
-| **Renewal due date** | Date the next premium/renewal is due (`policy_instalments.payment_due_date`). A policy can have **several unpaid** instalments; **one oldest unpaid** drives segment. |
-| **Report date** | Date the dashboard is viewed, or the **as-of** end of a filter (default: today). |
-| **Days overdue** | `report_date − oldest_unpaid_renewal_due_date`. **≤ 0** = not overdue yet (Segment A territory). |
-| **Renewal collected** | Payment received against an unpaid renewal due (row becomes `renewal_payment_received` with `payment_date`). |
-| **Active customer (PDF)** | In-force policy whose **oldest unpaid** renewal is **not yet overdue** (days overdue ≤ 0). |
+Today, every late renewal (30 days, 100 days, 200+ days) is often shown in **one big “overdue” pile**. That hides the truth:
 
-**Scope:** All recurring / renewal products (Education, Savings, Life, HMO, Motor, Travel). **New business** is out of scope.
+- Are we collecting from **customers who are not late yet**?
+- Are we fixing **recent** lateness (1–60 days)?
+- How much sits in the **middle** (61–199 days)?
+- How much is **very old** debt (200+ days) that needs win-back?
 
-**System filter (already applied on renewal stats & renewal reminder):** leads with `main_status = policy_active` only.
+We split the renewal book into **four age groups (segments)** so each can be managed and measured on its own.
 
 ---
 
-## 3. Segments A–D (non-overlapping, full book)
+## The four segments (each customer sits in only one)
 
-Each **policy (lead)** sits in **exactly one** segment on a given report date.
+We look at each policy and find the **oldest bill that is still not paid**. How many days that bill is late (or how soon it is due) decides the segment.
 
-| Code | Name | Days overdue (oldest unpaid) | Sub-bands (for drill-down) |
-|------|------|------------------------------|----------------------------|
-| **A** | Current renewals (active) | **−30 to 0** (due in next 30 days or due today) | Due in 15–30 · Due in 1–14 · Due today |
-| **B** | Recently overdue | **1–60** | 1–30 · 31–60 |
-| **C** | Mid overdue | **61–199** | 61–120 · 121–199 |
-| **D** | Long overdue | **200+** | 200–365 · Over 365 |
+| Segment | Plain name | Rule (oldest unpaid bill) |
+|---------|------------|---------------------------|
+| **A** | Current / not late yet | Due today or in the next 30 days |
+| **B** | Recently late | 1 to 60 days late |
+| **C** | Mid late | 61 to 199 days late |
+| **D** | Very late / win-back | 200 days late or more |
 
-**Classification rule (snapshot):**
+**One policy = one segment.** If someone owes several months, we use the **oldest** unpaid due date, not the newest.
 
-1. List all **unpaid** renewal instalments for the policy (statuses such as `next_renewal`, `renewal_link_sent`, `renewal_overdue`, `renewal_payment_failed`—confirm with ops).  
-2. Take **minimum** `payment_due_date` → **oldest unpaid due**.  
-3. Compute days overdue vs report date → assign **one** segment.
-
-**Important:** The **row** in Renewal Reminder may still show **multiple** overdue instalments and total premium; the **segment** is from **oldest unpaid only** (worst ageing), not from “newest” due.
+**How customers pay:** In our process, they pay **oldest bill first**, then the next. We do not need special rules for “paying a newer bill while an old one is still open.”
 
 ---
 
-## 4. The confusion we clarified: payment changes segment, but collection credit does not move
+## Two different things on the screen (do not mix them)
 
-### 4.1 Snapshot moves when customer pays
+### 1) Live book — “Who is where **right now**?”
 
-When a customer pays renewals, **oldest unpaid due date moves forward** (or vanishes). So **today’s segment** can change:
+- Shows how many policies are in A, B, C, D **today**.
+- Shows how much money is **still to be collected** in each segment **today**.
+- **Always live** — refreshes as payments come in.
+- **No date range filter** for this part (optional: filter by product type or by agent for admin).
+- This is the **work queue**: who to call, how big the problem is in each age group **now**.
 
-- Was **C (90 days overdue)** → pays oldest arrears → oldest unpaid might become **B (20 days)** or **A (due in 14 days)** or **none** if fully current.
+When someone pays:
 
-That is **correct** for “where does this policy sit **now**?”
+- Money **still owed** in that segment **goes down**.
+- The customer may **move** to another segment (e.g. from C to B or A) if their oldest unpaid bill changed.
 
-### 4.2 Collection credit is frozen at payment time (PDF requirement)
+### 2) Collections in a period — “How much did we **collect**, and which segment **gets the credit**?”
 
-For **“Segment B collected ₦X in October”**, you do **not** re-tag old payments when the policy moves to A or C later.
+- Shows money **received** in a chosen period: today, this week, this month, or custom dates.
+- Each payment is credited to **the segment the customer was in on the day they paid** (using the same oldest-unpaid rule on that day).
+- **Needs a date filter** — you are asking “what happened between these dates?”
+- That credit **does not move** later if the customer moves to another segment.
 
-**Rule:** On each `renewal_payment_received` row, look at **payment_date**:
+**Example:** Customer was in **C** and paid **₦15,000** on Monday.
 
-1. Reconstruct **oldest unpaid due** as it was **immediately before** that payment (or equivalent business rule from finance).  
-2. Compute **days overdue on payment_date** → that payment counts toward **that segment’s collected** for the period containing `payment_date`.
+- **Monday, collections (this week):** Segment **C** shows **+₦15,000** collected.
+- **Monday evening, live book:** Segment **C** “still to collect” drops by **₦15,000** for that policy; the customer might no longer be in C.
+- **Next week:** If you filter collections **“last week”**, C still shows **₦15,000** for that payment. If you look at the **live book**, the customer might now be in **B** or **A**.
 
-**Example (simplified amounts):**
-
-| Lead | Unpaid dues on 1 Oct | Segment on 1 Oct |
-|------|----------------------|------------------|
-| L1 | Due 25 Oct only | **A** (not overdue) |
-| L2 | Due 5 Sep (26 days late) | **B** (1–30 band) |
-| L3 | Due 1 Jul (92 days late) | **C** |
-| L4 | Due 1 Jan 2025 (200+ days late) | **D** |
-
-**15 Oct:** L3 pays ₦10,000 clearing the July due → **October collected** includes **₦10,000 credited to Segment C** (because on 15 Oct, before/against that payment, ageing was in C).  
-
-**1 Nov snapshot:** L3 might now be **A** or **B** if the next unpaid due is near—but **October’s C collected** still includes that ₦10,000.
-
-### 4.3 Multi-instalment lead (one row in UI, one segment)
-
-Lead **X** has unpaid instalments #5–#9 overdue (earliest due 1 Mar) and #10 due next month:
-
-- **Oldest unpaid** = 1 Mar → **days overdue** drives segment (**D** if 200+ days on report date).  
-- **Entire lead** appears once in segment **D** on the dashboard snapshot.  
-- **Overdue premium** on the row can still show **sum** of all overdue instalments; segment is **not** per-instalment.
-
-**Upcoming tab rule (already implemented):** If **any** instalment is `renewal_overdue`, the lead **does not** appear on Upcoming—even if a future `next_renewal` exists. They stay on **Overdue** until all overdue rows are cleared.
+**One sentence for leadership:**  
+**Live book = situation now. Collection period = money story for the dates you pick.**
 
 ---
 
-## 5. What each dashboard should show (target — PDF)
+## Step-by-step flow (day in the life)
 
-For **each segment A, B, C, D** (and optional sub-bands), sales expects **three numbers** in the selected period / as-of date:
+### Morning — agent opens dashboard
 
-| Metric | Snapshot meaning | Period meaning |
-|--------|------------------|----------------|
-| **Renewal due (count / value)** | Policies / ₦ still unpaid in that segment **as of report date** | Optional: dues **falling due** in calendar window |
-| **Renewal collected** | N/A as snapshot | ₦ (and count) paid in period, **tagged by segment at payment date** |
-| **Renewal rate / collection %** | Collected ÷ (Collected + still due) **within that segment** for the period | Per-segment performance, not one global % |
+1. System looks at every active renewal policy assigned to the agent.
+2. For each policy, find **oldest unpaid** renewal due date.
+3. Compare to **today** → put policy in **A, B, C, or D**.
+4. Add up **still unpaid** premium in each segment → show four boxes: count + **to collect ₦**.
 
-**Filters (admin):**
+Agent thinks: “I have X people in B, ₦Y still to collect in B.”
 
-- Report / period (week, month, custom)  
-- Product type  
-- Agent (all agents vs one agent)  
+### During the day — customer pays
 
-**Not in PDF as primary:** instalment-level ranking without segment breakdown (we have ranking elsewhere).
+1. Payment succeeds on the **oldest unpaid** bill (our normal process).
+2. **Before** marking the bill paid, system checks: on **today’s date**, which segment was this policy in? → e.g. **C**.
+3. System **records** on that payment: “This ₦ amount counts as **segment C** collection.”
+4. Bill is marked paid; **live book** is recalculated → segments and **to collect** update.
 
----
+### Evening — manager checks “this week”
 
-## 6. What we have today (implemented)
+1. Manager sets **collection period** = this week.
+2. System adds all payments this week, grouped by **segment credit** (A/B/C/D) → “C collected ₦15k this week,” etc.
+3. **Live book** is still **as of today** — no week filter on overdue segments.
 
-### 6.1 Admin → Dashboard → **Renewal stats** tab
+### One week later
 
-**Where:** `/dashboard` → carousel slide **Renewal stats** (`AdminRenewalStatsPanel`).  
-**API:** `GET /admin/lead/dashboard/renewal-stats`
-
-**Filters:** `renewal_duration`, custom dates, `renewal_product_type`, optional `agent_id`.
-
-**KPI chips (single aggregate—not A–D):**
-
-| UI label | Meaning |
-|----------|--------|
-| **Amount Collected / Amount Due** | Left: sum of `amount` where `renewal_payment_received` and **`payment_date`** in range. Right: sum of premium/amount for **unpaid** statuses (`link_sent`, `overdue`, `failed`) whose **`payment_due_date`** falls in range. |
-| **Renewals Collected / Unpaid (due in range)** | Count of collected instalments (payment date in range) / count of unpaid instalments (due date in range). |
-| **Overdue Renewals** | Count of instalments with status **`renewal_overdue`** and due date in range. |
-| **Next Renewal Links Sent** | Count with **`renewal_link_sent`**, due in range. |
-| **Overdue Premium** | Sum of **`premium`** on **`renewal_overdue`** only, due in range. |
-| **Premium value collection %** | `collected_amount ÷ (collected_amount + overdue_premium)` — **not** segment-aware. |
-| **Instalments collected %** | `collected_count ÷ (collected_count + unpaid_due_count)` in window. |
-| **Ranking** | Agent ordinal by **count** of renewals collected (payment date in range) when one agent selected. |
-
-**Key implementation detail:** **Collected** uses **`payment_date`** (good for PDF “when paid”). **Due / unpaid** uses **`payment_due_date`** in the same calendar window—**not** the same as “outstanding by segment A–D as of today.”
-
-### 6.2 Agent dashboard — Renewal stats section
-
-Same logic as admin renewal stats but **scoped to logged-in agent** via `GET /agent/dashboard` renewal fields.
-
-### 6.3 Admin & Agent — **Renewal Reminder** module
-
-**Where:** `/renewal-reminder` (admin) and `/agent/renewal-reminder`.
-
-**Purpose:** Daily **work queue**, not the full segmented performance dashboard.
-
-| Tab | List unit | Segment filter |
-|-----|-----------|----------------|
-| **Upcoming** | One row per lead (nearest upcoming due) | `upcoming_today`, `upcoming_1_14`, `upcoming_15_30` |
-| **Overdue** | One row per lead (`max_overdue_days` from **earliest** overdue due) | `overdue_1_30`, … `overdue_366_plus` |
-| **Paid** | Instalment rows | Payment date filters |
-
-**KPI strip:** Lead count + ₦ to collect (overdue) or advance premium (upcoming) for **selected segment band**.
-
-**Mapping to PDF (approximate, not identical):**
-
-| PDF segment | Renewal Reminder analogue |
-|-------------|---------------------------|
-| A sub-bands | Upcoming segments (due today / 1–14 / 15–30) |
-| B sub-bands | Overdue 1–30, 31–60 |
-| C sub-bands | Overdue 61–120, 121–199 |
-| D sub-bands | Overdue 200–365, 366+ |
-
-**Gap:** Reminder segments are **overdue/upcoming tabs**, not a unified **A–D board** with **per-segment collected** in period.
-
-### 6.4 Agent ranking
-
-**Where:** `/agent/agent-ranking`. Ranks agents by renewal collection % in a date range—**global**, not per segment A–D.
+- **Collection filter = last week** → same ₦15k still credited to **C** for that week (history).
+- **Live book** → current segments and **to collect** only (customer may have moved).
 
 ---
 
-## 7. Gap analysis (PDF vs today)
+## How each number is calculated (simple formulas)
 
-| PDF requirement | Status |
-|-----------------|--------|
-| Four top-level segments A–B–C–D on **admin renewal dashboard** | **Not built** |
-| Sub-bands under each segment | Partially mirrored in **Renewal Reminder** filters only |
-| Outstanding / due by segment **as of report date** | **Not built** (stats use due-date **window**, not oldest-unpaid segment) |
-| Collected credited to **segment at payment time** | **Not built** (only total collected by payment date) |
-| Per-segment renewal rate | **Not built** |
-| Agent-specific views with same segmentation | **Not built** on dashboard (agent has reminder bands only) |
+### Live segment (which group is the policy in?)
 
----
+1. Oldest unpaid due date = earliest due date among all unpaid renewal bills for that policy.
+2. Days difference = **today minus that date** (if due is in the future, they are in **A**, not “late” yet).
+3. Map days to **A, B, C, or D** using the table above.
 
-## 8. Recommended target UI (for mockups / Gemini)
+### Live “to collect” per segment
 
-Use this layout for **non-functional demo** screens. Label clearly: **“Target design — segmentation model”**.
+- Sum of **unpaid renewal premium** for all policies that sit in that segment **right now** (rules for which bills count in the sum should match finance — usually all unpaid renewal amounts on that policy while it stays in that segment).
 
-### 8.1 Admin — Dashboard — Renewal stats (redesign)
+### Collected per segment in a period
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Renewal performance          [Period ▼] [Product ▼] [Agent ▼] [Apply]   │
-│  Report as of: 29 Oct 2026 · Selected: 1–29 Oct 2026                     │
-├─────────────────────────────────────────────────────────────────────────┤
-│  SEGMENT SNAPSHOT (as of report date)                                    │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐                  │
-│  │ A Current│ │ B Recent │ │ C Mid    │ │ D Long   │                  │
-│  │ Leads 120│ │ Leads 45 │ │ Leads 18 │ │ Leads 7  │                  │
-│  │ Due ₦…   │ │ Due ₦…   │ │ Due ₦…   │ │ Due ₦…   │                  │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘                  │
-├─────────────────────────────────────────────────────────────────────────┤
-│  COLLECTION IN PERIOD (credit at payment time)                           │
-│  Segment │ Collected ₦ │ Paid count │ Rate % │ vs prior period          │
-│  A       │ …           │ …          │ …      │ ▲                        │
-│  B       │ …           │ …          │ …      │ ▼                        │
-│  C       │ …           │ …          │ …      │                          │
-│  D       │ …           │ …          │ …      │                          │
-│  TOTAL   │ …           │ …          │ …      │                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  [Optional drill-down: sub-band tabs under selected segment]             │
-│  Table: Lead ID | Policy | Agent | Oldest unpaid due | Days overdue | ₦  │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+1. Take every renewal payment with **payment date** inside the chosen period.
+2. Each payment already has **segment credit** saved when it was paid (e.g. credited to **C**).
+3. Sum amounts **by segment** → “B collected ₦…,” “C collected ₦…,” etc.
 
-**Colour coding suggestion for mocks:**
+### Optional: collection rate per segment (future)
 
-- **A** — teal / green (healthy pipeline)  
-- **B** — amber (early recovery)  
-- **C** — orange  
-- **D** — red (lapsed / win-back)  
-
-### 8.2 Agent — Dashboard slice (future)
-
-Same **A–D snapshot** for **my book only**, plus link **“Open in Renewal Reminder”** pre-filtered to matching band.
-
-### 8.3 Keep existing carousel tab (interim)
-
-Until segmentation ships, keep current chips but add a **banner**:  
-*“Totals are not split by segment A–D. See Renewal Reminder for age bands.”*
+- For a period: **collected in segment B** ÷ (**collected in B** + **still was due in B at start of period**) — agree exact definition with sales before building.
 
 ---
 
-## 9. Data model reference (engineering)
+## What to store in the system (so reports stay honest)
 
-| Entity | Fields used |
-|--------|-------------|
-| `policy_instalments` | `payment_due_date`, `payment_date`, `status`, `amount`, `premium`, `lead_id` |
-| `leads` | `main_status`, `plan_type`, `agent_id` |
-| `lead_reports` | `policy_number`, display fields for reminder table |
+| What | When it is saved | Why |
+|------|------------------|-----|
+| **Segment credit on payment** | When payment succeeds | So “C collected ₦15k last week” stays true forever |
+| **Live segments** | Calculated when dashboard opens | Always current; no daily history required at first |
+| **Daily snapshot table** | Optional later | Only if you need “what did segment C look like on 31 Oct?” frozen after months pass |
 
-**Statuses:** `next_renewal`, `renewal_link_sent`, `renewal_overdue`, `renewal_payment_received`, `renewal_payment_failed`.
-
-**Collected query (today):** `renewal_payment_received` + `payment_date` in `[start, end]`.  
-**Unpaid due in window (today):** unpaid statuses + `payment_due_date` in window.
-
-**Segment snapshot (to build):** group by `lead_id`, compute oldest unpaid due, days overdue vs report date → bucket A/B/C/D.  
-**Segment collected (to build):** for each paid row in period, compute segment at `payment_date` (historical oldest unpaid).
+**Start simple:** live book + save segment on each payment. Add daily snapshots only if leadership needs frozen historical books.
 
 ---
 
-## 10. Edge cases (confirm with sales before build)
+## Who sees what
 
-| Case | Question for sales |
-|------|-------------------|
-| Partial payment on one instalment | PDF says track separately—define whether one instalment can split across segments. |
-| Payment clears multiple instalments at once | One payment event or multiple segment credits? |
-| Policy not `policy_active` | Exclude from renewal dashboard? (current code excludes non-active.) |
-| Travel / single-pay products | In scope per PDF—confirm instalment pattern in data. |
-| Agent reassignment | Segment snapshot by current agent vs agent at payment time? |
+| User | Live book (A–D, to collect) | Collections by segment | Extra filters |
+|------|----------------------------|-------------------------|---------------|
+| **Agent** | Own customers only | Own customers, chosen period | Product type |
+| **Admin** | All agents or one agent | Same | Agent, product type, period |
 
----
-
-## 11. Summary for your manager (one paragraph)
-
-We already measure **total** renewal collections and overdue exposure on the **Admin Renewal stats** tab, but sales’s PDF requires **four non-overlapping age segments (A–D)** based on each policy’s **oldest unpaid due date**, plus **collection credited to the segment the policy was in when paid**—so performance in “recently overdue” is not mixed with “200+ day lapsed.” **Renewal Reminder** gives agents **similar age bands** for daily calling, but it is **not** the full segmented dashboard with per-segment collected and renewal rates. Next step is to implement the **A–D board and payment-time segment tagging** on admin (then agent) renewal stats while keeping Renewal Reminder as the operational drill-down.
+**Renewal Reminder** (existing screens): good for **calling lists** with similar age bands (e.g. 1–30 days late). That is **not** the full dashboard with **collections credited by segment** — it complements the new view.
 
 ---
 
-## 12. Related files in repo
+## What we have today (the problem)
 
-| Area | Path |
-|------|------|
-| Admin renewal stats API | `insurance-service/application/routes/admin/lead_management.py` → `get_admin_renewal_stats` |
-| Collection / due window helpers | `insurance-service/application/utilities/agent_ranking.py` |
-| Reminder segment bands | `insurance-service/application/service/renewal_reminder_segments.py` |
-| Reminder aggregation | `insurance-service/application/service/renewal_reminder_service.py` |
-| Admin renewal stats UI | `admin/component/dashboard/admin-renewal-stats-panel.js` |
-| Reminder segment KPI | `admin/component/agent-component/renewal-reminder/renewal-reminder-segment-kpi.js` |
-| PDF requirements | `Renewal_Dashboard_Segmentation_Requirements.pdf` (Sales, 21 Oct 2026) |
+| What sales wants | What we have now |
+|------------------|------------------|
+| Four segments A–D on admin renewal dashboard | One combined renewal stats view — not split by A–D |
+| Live “to collect” per segment | Partially similar on **Renewal Reminder** age bands, not the same as A–D dashboard |
+| Collections credited to segment when paid | **Not built** — we only total collections by payment date, not by segment credit |
+| Agent sees both live book + period collections | Agent has renewal stats totals and reminder lists, not this full model |
+
+**Risk if we don’t build segment credit on payment:**  
+“We collected ₦X in segment C this month” cannot be reported accurately after customers move to other segments.
+
+---
+
+## What we will build (recommended order)
+
+1. **Save segment credit** on every renewal payment (which of A/B/C/D on payment day).
+2. **Live dashboard block:** four segments, policy count + to collect ₦ (agent + admin).
+3. **Collection block:** period filter → collected ₦ (and count) per A/B/C/D.
+4. **Lead list:** show each customer’s **current segment**; optional column “last payment credited to segment X.”
+5. **Later (optional):** nightly snapshot if you need frozen “book size on date X.”
+
+---
+
+## Filters — quick reference
+
+| Filter | Used for | Example |
+|--------|----------|---------|
+| **Collection period** (today / week / month / custom) | **Collected** ₦ by A/B/C/D | “How much did B recover in October?” |
+| **Product type** | Both blocks (narrow which policies) | Life only |
+| **Agent** (admin) | Both blocks | One agent’s book |
+| **Date range on overdue segments** | **Not used** — live book is **always current** | — |
+
+---
+
+## Short summary for a meeting
+
+We split renewals into **four age groups (A–D)** using the **oldest unpaid bill**. The dashboard shows **two stories**: (1) **live** — who owes what in each group **today**; (2) **period** — money **collected** in a chosen week/month, **credited to the group they were in when they paid**. Live book updates after every payment; collection history for a week does not change. We need to **record segment on each payment** and **build the split dashboard**; today we only have **combined** renewal totals and **reminder lists**, not full A–D collection credit.
+
+---
+
+*Related technical note for engineering:* `docs/RENEWAL_DASHBOARD_SEGMENTATION_MANAGER_GUIDE.md`  
+*Sales source PDF:* Renewal Dashboard Segmentation Requirements, 21 Oct 2026
